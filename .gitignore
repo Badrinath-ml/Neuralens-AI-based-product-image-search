@@ -1,0 +1,43 @@
+# Environment & secrets
+.env
+.env.local
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Database & runtime artifacts
+*.db
+Backend/products.db
+Backend/realtime_snapshot.png
+Backend/media_storage/*
+!Backend/media_storage/.gitkeep
+
+# ML models (download separately)
+*.pt
+
+# Node / Frontend
+node_modules/
+Frontend/dist/
+Frontend/.vite/
+*.local
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
