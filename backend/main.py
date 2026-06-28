@@ -20,15 +20,21 @@ setup_logging(settings.debug)
 logger = logging.getLogger(__name__)
 
 
-@asynccontextmanager
 async def lifespan(app: FastAPI):
-    os.makedirs(settings.media_dir, exist_ok=True)
-    os.makedirs(os.path.join(settings.media_dir, "snapshots"), exist_ok=True)
+    vercel_media_dir = "/tmp/media_storage"
+    
+    os.makedirs(vercel_media_dir, exist_ok=True)
+    os.makedirs(os.path.join(vercel_media_dir, "snapshots"), exist_ok=True)
+    logger.info(f"Temporary media storage initialized at {vercel_media_dir}")
 
+    # Keep your database sync tables generation intact
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database initialized")
+    
     yield
+    
+    # Clean up connections on shutdown
     await engine.dispose()
     logger.info("Database connection pool disposed")
 
