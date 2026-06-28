@@ -199,7 +199,7 @@ async def detect_objects(
         
     try:
         ai_service = get_ai_service()
-        detected = ai_service.detect_all_objects(tmp_path)
+        detected = await ai_service.detect_all_objects(tmp_path)
         return {"objects": detected}
     finally:
         if os.path.exists(tmp_path):

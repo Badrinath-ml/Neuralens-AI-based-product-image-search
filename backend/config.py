@@ -19,6 +19,15 @@ class Settings(BaseSettings):
     serpapi_key: str = ""
     huggingfacehub_api_token: str = ""
 
+    # Cloud object detection (Ultralytics HUB Inference API)
+    detection_api_url: str = ""
+    detection_api_key: str = ""
+
+    # Optional: Local Ollama fallback for Gemini rate limits
+    use_ollama: bool = False
+    ollama_model: str = "qwen2-vl"
+    ollama_base_url: str = "http://localhost:11434/v1"
+
     cors_origins: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173"
     api_url: str = "http://127.0.0.1:8000"
 
