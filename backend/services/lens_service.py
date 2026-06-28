@@ -117,13 +117,18 @@ def start_realtime_lens():
             if not is_processing and (current_time - last_analysis_time) > 4.5:
                 last_analysis_time = current_time
                 is_processing = True
-                
-                img_name = "realtime_snapshot.png"
-                cv2.imwrite(img_name, frame)
-                
-                worker = threading.Thread(target=async_network_worker, args=(img_name, frame_width, frame_height))
-                worker.daemon = True
-                worker.start()
+
+                # Encode the current frame to PNG bytes in memory (no disk write)
+                success, buffer = cv2.imencode(".png", frame)
+                if success:
+                    image_bytes = buffer.tobytes()
+                    worker = threading.Thread(
+                        target=async_network_worker, args=(image_bytes, frame_width, frame_height)
+                    )
+                    worker.daemon = True
+                    worker.start()
+                else:
+                    is_processing = False
 
             # 🎨 4. PAINT LIGHTWEIGHT HIGH-TECH HUD OVERLAYS
             with lock:
@@ -143,42 +148,41 @@ def start_realtime_lens():
             running = False
 
 
-def async_network_worker(file_path: str, width: int, height: int):
+def async_network_worker(image_bytes: bytes, width: int, height: int):
     global current_api_data, is_processing, running, tracked_box, prev_roi_gray
     api_url = os.getenv("API_URL", "http://127.0.0.1:8000/api/v1/ai/search/upload")
-    
-    if not os.path.exists(file_path) or not running:
+
+    if not running:
         is_processing = False
         return
 
     try:
-        with open(file_path, "rb") as f:
-            files = {"file": (os.path.basename(file_path), f, "image/png")}
-            response = httpx.post(api_url, files=files, timeout=15.0)
-            
-            if response.status_code in [200, 201] and running:
-                new_data = response.json()
-                with lock:
-                    current_api_data = new_data
-                    
-                    # Pull precise deep-learning object coordinates from the API return, safely handling None values
-                    box_data = new_data.get("bounding_box") or {"ymin": 250, "xmin": 200, "ymax": 750, "xmax": 600}
-                    sidebar_w = int(width * 0.32)
-                    max_track_width = width - sidebar_w
-                    
-                    ymin = int((box_data["ymin"] / 1000) * height)
-                    xmin = int((box_data["xmin"] / 1000) * width)
-                    ymax = int((box_data["ymax"] / 1000) * height)
-                    xmax = int((box_data["xmax"] / 1000) * width)
-                    
-                    # Snap the tracking box directly to the validated object borders
-                    target_w = max(xmax - xmin, 50)
-                    target_h = max(ymax - ymin, 50)
-                    target_x = max(0, min(xmin, max_track_width - target_w))
-                    target_y = max(0, min(ymin, height - int(height * 0.20) - target_h))
-                    
-                    tracked_box = [target_x, target_y, target_w, target_h]
-                    prev_roi_gray = None  # Force local engine tracking refresh on next loop step
+        files = {"file": ("realtime_snapshot.png", image_bytes, "image/png")}
+        response = httpx.post(api_url, files=files, timeout=15.0)
+
+        if response.status_code in [200, 201] and running:
+            new_data = response.json()
+            with lock:
+                current_api_data = new_data
+
+                # Pull precise object coordinates from the API return, safely handling None values
+                box_data = new_data.get("bounding_box") or {"ymin": 250, "xmin": 200, "ymax": 750, "xmax": 600}
+                sidebar_w = int(width * 0.32)
+                max_track_width = width - sidebar_w
+
+                ymin = int((box_data["ymin"] / 1000) * height)
+                xmin = int((box_data["xmin"] / 1000) * width)
+                ymax = int((box_data["ymax"] / 1000) * height)
+                xmax = int((box_data["xmax"] / 1000) * width)
+
+                # Snap the tracking box directly to the validated object borders
+                target_w = max(xmax - xmin, 50)
+                target_h = max(ymax - ymin, 50)
+                target_x = max(0, min(xmin, max_track_width - target_w))
+                target_y = max(0, min(ymin, height - int(height * 0.20) - target_h))
+
+                tracked_box = [target_x, target_y, target_w, target_h]
+                prev_roi_gray = None  # Force tracking refresh on next loop step
     except Exception:
         pass
     finally:

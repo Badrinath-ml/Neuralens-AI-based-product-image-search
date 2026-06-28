@@ -85,9 +85,11 @@ Return ONLY valid JSON.
         """Read *image_path* from disk and return (raw_bytes, mime_type)."""
         with open(image_path, "rb") as fh:
             raw = fh.read()
-        # Use Pillow to reliably detect the format
-        with Image.open(io.BytesIO(raw)) as img:
-            fmt = (img.format or "JPEG").upper()
+        return raw, self._detect_mime(raw)
+
+    @staticmethod
+    def _detect_mime(raw: bytes) -> str:
+        """Detect MIME type from raw image bytes using Pillow."""
         mime_map = {
             "JPEG": "image/jpeg",
             "JPG": "image/jpeg",
@@ -95,8 +97,9 @@ Return ONLY valid JSON.
             "WEBP": "image/webp",
             "GIF": "image/gif",
         }
-        mime = mime_map.get(fmt, "image/jpeg")
-        return raw, mime
+        with Image.open(io.BytesIO(raw)) as img:
+            fmt = (img.format or "JPEG").upper()
+        return mime_map.get(fmt, "image/jpeg")
 
     async def _call_detection_api(self, image_bytes: bytes, mime: str) -> dict:
         """
@@ -153,51 +156,82 @@ Return ONLY valid JSON.
         }
 
     # ------------------------------------------------------------------
-    # Public detection methods (same signatures as the old YOLO version)
+    # Public detection methods — bytes-native (no disk I/O)
     # ------------------------------------------------------------------
 
-    async def detect_bounding_box_async(self, image_path: str) -> dict | None:
+    async def detect_bounding_box_from_bytes(
+        self, image_bytes: bytes, mime: str = "image/jpeg"
+    ) -> dict | None:
         """
-        Async version of detect_bounding_box.
         Returns the highest-confidence bounding box in 0–1000 scale, or None.
+        Operates entirely in memory — no temporary files written to disk.
         """
         if not self._detection_api_url:
             return None
         try:
-            raw_bytes, mime = self._load_image_bytes(image_path)
-            payload = await self._call_detection_api(raw_bytes, mime)
-
+            payload = await self._call_detection_api(image_bytes, mime)
             images = payload.get("images") or []
             if not images:
                 return None
-
             results = images[0].get("results") or []
             if not results:
                 return None
-
             shape = images[0].get("shape", [1, 1])
             img_height, img_width = shape[0], shape[1]
-
             best = max(results, key=lambda r: float(r.get("confidence", 0)))
             return self._normalize_box(best["box"], img_width, img_height)
-
         except Exception as exc:
             logger.error("Cloud detection (bounding_box) failed: %s", exc)
             return None
 
+    async def detect_all_objects_from_bytes(
+        self, image_bytes: bytes, mime: str = "image/jpeg"
+    ) -> list[dict]:
+        """
+        Returns all detected objects as a list of dicts.
+        Operates entirely in memory — no temporary files written to disk.
+        Each entry: {"box": {xmin,ymin,xmax,ymax}, "label": str, "confidence": float}
+        """
+        if not self._detection_api_url:
+            return []
+        try:
+            payload = await self._call_detection_api(image_bytes, mime)
+            images = payload.get("images") or []
+            if not images:
+                return []
+            results = images[0].get("results") or []
+            shape = images[0].get("shape", [1, 1])
+            img_height, img_width = shape[0], shape[1]
+            return [
+                {
+                    "box": self._normalize_box(item["box"], img_width, img_height),
+                    "label": item.get("name", "object"),
+                    "confidence": float(item.get("confidence", 0)),
+                }
+                for item in results
+            ]
+        except Exception as exc:
+            logger.error("Cloud detection (all_objects) failed: %s", exc)
+            return []
+
+    # ------------------------------------------------------------------
+    # Path-based wrappers (kept for backward compatibility)
+    # ------------------------------------------------------------------
+
+    async def detect_bounding_box_async(self, image_path: str) -> dict | None:
+        """Path-based wrapper — reads file then delegates to detect_bounding_box_from_bytes."""
+        raw_bytes, mime = self._load_image_bytes(image_path)
+        return await self.detect_bounding_box_from_bytes(raw_bytes, mime)
+
     def detect_bounding_box(self, image_path: str) -> dict | None:
         """
-        Synchronous shim kept for backward compatibility with callers that
-        cannot await.  Schedules the async call on a new event loop.
-        Prefer detect_bounding_box_async in async contexts.
+        Synchronous shim kept for backward compatibility.
+        Prefer detect_bounding_box_from_bytes / detect_bounding_box_async in async contexts.
         """
         import asyncio
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                # We are already inside an async context (e.g. FastAPI).
-                # Return None immediately; callers inside async code should
-                # use detect_bounding_box_async instead.
                 logger.debug(
                     "detect_bounding_box called from a running event loop; "
                     "use detect_bounding_box_async for proper async support."
@@ -209,60 +243,32 @@ Return ONLY valid JSON.
             return None
 
     async def detect_all_objects(self, image_path: str) -> list[dict]:
-        """
-        Returns a list of all detected objects (async).
-        Each entry: {"box": {xmin,ymin,xmax,ymax}, "label": str, "confidence": float}
-        Signature preserved from the old YOLO implementation.
-        """
-        if not self._detection_api_url:
-            return []
-        try:
-            raw_bytes, mime = self._load_image_bytes(image_path)
-            payload = await self._call_detection_api(raw_bytes, mime)
-
-            images = payload.get("images") or []
-            if not images:
-                return []
-
-            results = images[0].get("results") or []
-            shape = images[0].get("shape", [1, 1])
-            img_height, img_width = shape[0], shape[1]
-
-            detected = []
-            for item in results:
-                detected.append({
-                    "box": self._normalize_box(item["box"], img_width, img_height),
-                    "label": item.get("name", "object"),
-                    "confidence": float(item.get("confidence", 0)),
-                })
-            return detected
-
-        except Exception as exc:
-            logger.error("Cloud detection (all_objects) failed: %s", exc)
-            return []
+        """Path-based wrapper — reads file then delegates to detect_all_objects_from_bytes."""
+        raw_bytes, mime = self._load_image_bytes(image_path)
+        return await self.detect_all_objects_from_bytes(raw_bytes, mime)
 
     async def analyze_image(self, image_path: str) -> dict:
         """
         Full pipeline: run Gemini vision analysis + cloud bounding-box detection.
-        Returns the structured product dict expected by the rest of the app.
+        Reads the image file once into memory and reuses those bytes for both
+        Gemini (base64 data-URL) and cloud object detection — zero extra disk I/O.
         """
         import base64
-        import mimetypes
         from core.exceptions import AppError
 
         if not os.path.exists(image_path):
             raise FileNotFoundError(f"Image not found: {image_path}")
 
-        mime_type, _ = mimetypes.guess_type(image_path)
-        mime_type = mime_type or "image/jpeg"
-
         with open(image_path, "rb") as image_file:
             raw_bytes = image_file.read()
-            if not raw_bytes:
-                raise ValueError("Image file is empty.")
-            base64_image = base64.b64encode(raw_bytes).decode("utf-8")
+        if not raw_bytes:
+            raise ValueError("Image file is empty.")
 
+        # Detect MIME from bytes (avoids a second mimetypes.guess_type call)
+        mime_type = self._detect_mime(raw_bytes)
+        base64_image = base64.b64encode(raw_bytes).decode("utf-8")
         computed_image_url = f"data:{mime_type};base64,{base64_image}"
+
         logger.info("Running vision analysis for %s (using Gemini)", image_path)
 
         try:
@@ -285,8 +291,10 @@ Return ONLY valid JSON.
             logger.exception("Vision analysis generation failed")
             raise AppError(f"Image analysis failed: {exc}", status_code=500) from exc
 
-        # Async bounding-box detection — no blocking call on the event loop
-        structured_data["bounding_box"] = await self.detect_bounding_box_async(image_path)
+        # Reuse the bytes already in memory — no second file read
+        structured_data["bounding_box"] = await self.detect_bounding_box_from_bytes(
+            raw_bytes, mime_type
+        )
         return structured_data
 
 

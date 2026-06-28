@@ -187,23 +187,14 @@ async def detect_objects(
 ):
     """
     Endpoint for live camera object detection on the frontend.
-    Runs local YOLO model to return bounding boxes and object categories.
+    Passes image bytes directly to the cloud detection API — no temp files,
+    no disk writes, safe on read-only serverless filesystems (Vercel, Render, etc.).
     """
     content = await file.read()
-    import tempfile
-    import os
-    
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
-        
-    try:
-        ai_service = get_ai_service()
-        detected = await ai_service.detect_all_objects(tmp_path)
-        return {"objects": detected}
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+    mime = file.content_type or "image/jpeg"
+    ai_service = get_ai_service()
+    detected = await ai_service.detect_all_objects_from_bytes(content, mime)
+    return {"objects": detected}
 
 
 @router.post("/chat/{session_id}")
