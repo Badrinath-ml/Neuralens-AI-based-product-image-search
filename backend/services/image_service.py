@@ -31,7 +31,7 @@ class AIService:
     def __init__(self):
         if not settings.google_api_key and not os.getenv("GOOGLE_API_KEY"):
             raise ValueError(
-                "GOOGLE_API_KEY is required for image analysis when not using Ollama."
+                "GOOGLE_API_KEY is required for image analysis."
             )
 
         api_key = settings.google_api_key or os.getenv("GOOGLE_API_KEY")
@@ -263,11 +263,7 @@ Return ONLY valid JSON.
             base64_image = base64.b64encode(raw_bytes).decode("utf-8")
 
         computed_image_url = f"data:{mime_type};base64,{base64_image}"
-        logger.info(
-            "Running vision analysis for %s (using %s)",
-            image_path,
-            "Ollama" if settings.use_ollama else "Gemini",
-        )
+        logger.info("Running vision analysis for %s (using Gemini)", image_path)
 
         try:
             structured_data = await self.chain.ainvoke({
@@ -276,14 +272,13 @@ Return ONLY valid JSON.
             })
         except Exception as exc:
             exc_str = str(exc).lower()
-            if not settings.use_ollama and any(
+            if any(
                 term in exc_str
                 for term in ["resourceexhausted", "429", "quota", "rate limit", "exhausted"]
             ):
                 logger.error("Gemini API rate limit hit: %s", exc)
                 raise AppError(
-                    "Gemini API rate limits reached. Server is busy, please try again "
-                    "in a few moments or set up local Ollama.",
+                    "Gemini API rate limits reached. Server is busy, please try again in a few moments.",
                     status_code=429,
                 ) from exc
 

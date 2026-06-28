@@ -9,19 +9,18 @@ FastAPI backend for **NeuralLens** — an AI/ML product search engine combining 
 | API | FastAPI + Uvicorn |
 | Database | SQLite (async SQLAlchemy + aiosqlite) |
 | Vision (cloud) | Google Gemini 2.5 Flash via LangChain |
-| Vision (local) | Ollama — Qwen2-VL / LLaVA (optional, rate-limit fallback) |
-| Detection | Ultralytics YOLO (`yolo26n.pt`) |
+| Detection | Ultralytics HUB Cloud Inference API (async httpx) |
 | Prices | SerpAPI Google Shopping (India) |
 | Chat | LangChain + HuggingFace Router LLM |
-| Camera (server) | OpenCV — local desktop only |
-| Camera (browser) | `POST /detect` → YOLO live inference |
+| Camera (server) | OpenCV — local desktop only (not deployed) |
+| Camera (browser) | `POST /detect` → HUB Cloud Inference API |
 
 ## Project Structure
 
 ```
 Backend/
 ├── main.py                 # App entry, CORS, health check, lifespan
-├── config.py               # Pydantic settings from .env (Ollama options included)
+├── config.py               # Pydantic settings from .env (detection API keys, app config)
 ├── core/
 │   ├── logging.py          # Structured stdout logging
 │   └── exceptions.py       # AppError → NotFoundError / ValidationError hierarchy
@@ -33,7 +32,7 @@ Backend/
 ├── schemas/
 │   └── schema.py           # Pydantic request/response models
 ├── services/
-│   ├── image_service.py    # Gemini/Ollama vision + YOLO pipeline
+│   ├── image_service.py    # Gemini vision + cloud detection pipeline
 │   ├── search_service.py   # Search orchestration + price cache
 │   ├── scraper_service.py  # SerpAPI price fetch
 │   ├── assistent_service.py# Streaming HuggingFace chat assistant
@@ -65,50 +64,16 @@ uv run python -m uvicorn main:app --reload
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GOOGLE_API_KEY` | Yes (unless Ollama) | Gemini 2.5 Flash vision API key |
+| `GOOGLE_API_KEY` | Yes | Gemini 2.5 Flash vision API key |
 | `SERPAPI_KEY` | For prices | SerpAPI key for Google Shopping |
 | `HUGGINGFACEHUB_API_TOKEN` | For chat | HuggingFace router token |
-| `USE_OLLAMA` | No | `true` to use local Ollama instead of Gemini (default `false`) |
-| `OLLAMA_MODEL` | No | Local vision model name (default `qwen2-vl`) |
-| `OLLAMA_BASE_URL` | No | Ollama OpenAI-compatible base URL (default `http://localhost:11434/v1`) |
+| `DETECTION_API_URL` | For detection | Ultralytics HUB inference endpoint URL |
+| `DETECTION_API_KEY` | For detection | Ultralytics HUB API key (`x-api-key` header) |
 | `CORS_ORIGINS` | No | Comma-separated frontend URLs |
 | `DATABASE_URL` | No | Default: `sqlite+aiosqlite:///./products.db` |
 | `MAX_UPLOAD_MB` | No | Max image upload size (default `10`) |
 | `CACHE_TTL_HOURS` | No | Price cache TTL in hours (default `24`) |
 | `API_URL` | No | Used by server-side camera services for upload callback |
-
-## Local Ollama Setup — Bypass Gemini Rate Limits
-
-If you hit Gemini API quota limits (HTTP 429), switch to a fully local multimodal vision model with zero cloud dependency.
-
-### Recommended Models
-
-| Model | Size | Notes |
-|-------|------|-------|
-| `qwen2-vl` | 7B | ⭐ Best structured product extraction, multilingual |
-| `llava` | 7B | Solid all-round vision descriptions |
-| `llava-phi3` | 3.8B | Lightweight, good on CPU |
-| `moondream` | 1.8B | Ultra-fast, minimal hardware required |
-
-### Steps
-
-**1. Install Ollama** from https://ollama.com
-
-**2. Pull a vision model:**
-```bash
-ollama run qwen2.5:7b-instruct
-```
-
-**3. Configure `.env`:**
-```ini
-USE_OLLAMA=true
-OLLAMA_MODEL=qwen2-vl
-OLLAMA_BASE_URL=http://localhost:11434/v1
-```
-
-**4. Restart the backend.** The vision pipeline now routes through Ollama — Gemini is completely bypassed. `GOOGLE_API_KEY` is no longer needed.
-
-> The frontend will display a friendly banner if Gemini rate limits are hit before you switch.
 
 ## API Endpoints
 
@@ -121,7 +86,7 @@ OLLAMA_BASE_URL=http://localhost:11434/v1
 | `GET` | `/api/v1/ai/search/history` | Paginated search history (`?page=&page_size=`) |
 | `GET` | `/api/v1/ai/search/latest` | Most recent scan |
 | `GET` | `/api/v1/ai/search/results/{id}` | Price listings only |
-| `POST` | `/api/v1/ai/detect` | **Live YOLO detection** — returns all objects + boxes (browser AR Lens) |
+| `POST` | `/api/v1/ai/detect` | **Live object detection** — returns all objects + boxes (browser AR Lens) |
 | `POST` | `/api/v1/ai/chat/{session_id}` | Streaming AI chat (`text/plain` SSE-style) |
 | `POST` | `/api/v1/ai/camera/upload` | Trigger server-side OpenCV webcam UI (local desktop only) |
 | `GET` | `/health` | Health check with DB connectivity status |
@@ -131,9 +96,9 @@ OLLAMA_BASE_URL=http://localhost:11434/v1
 
 ```
 1. Ingest     → image upload (File/Blob) or text query
-2. Analyze    → Gemini 2.5 Flash or Ollama extracts brand, model, color,
+2. Analyze    → Gemini 2.5 Flash extracts brand, model, color,
                 specs, description, optimized search_query (JSON)
-3. Detect     → YOLO runs on uploaded image → normalized bounding box (0–1000)
+3. Detect     → Ultralytics HUB API → normalized bounding box (0–1000)
 4. Persist    → Product + bounding_box saved to SQLite
 5. Price Fetch→ Background task queries SerpAPI; results cached 24 h
 6. Poll       → Frontend polls GET /search/{id} every 2 s until status=complete
@@ -143,7 +108,7 @@ OLLAMA_BASE_URL=http://localhost:11434/v1
 ### Live AR Lens Pipeline (`/detect`)
 
 ```
-Browser frame (JPEG) → POST /detect → YOLO detect_all_objects()
+Browser frame (JPEG) → POST /detect → Cloud detect_all_objects()
 → [{label, confidence, box:{xmin,ymin,xmax,ymax}}]
 → Frontend overlays glowing cyan boxes on live video
 → Click box → submit frame as /search image

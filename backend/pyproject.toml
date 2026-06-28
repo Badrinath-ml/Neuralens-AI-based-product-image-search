@@ -3,7 +3,7 @@ name = "ai-based-product-image-search"
 version = "2.0.0"
 description = "Production-grade AI product image search with Google Shopping-style results"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.22.1",
     "fastapi[standard]>=0.137.0",
