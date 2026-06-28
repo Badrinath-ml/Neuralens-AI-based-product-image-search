@@ -1,3 +1,4 @@
+import os
 import json
 import logging
 import threading
@@ -169,6 +170,13 @@ async def camera_search(mode: str = "snapshot"):
     if mode not in ["snapshot", "stream"]:
         raise HTTPException(status_code=400, detail="Invalid mode. Must be 'snapshot' or 'stream'.")
 
+    # ✅ FIX: Intercept serverless execution environment contexts safely
+    if os.getenv("VERCEL") or os.getenv("RENDER"):
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Hardware hardware-level local webcam streams cannot execute on cloud servers. Use the web frontend stream client to capture images instead."
+        )
+
     if mode == "snapshot":
         if cam_mode.is_active:
             raise HTTPException(status_code=409, detail="Webcam snapshot viewfinder is already active.")
@@ -263,6 +271,7 @@ async def chat_with_session_stream(
                 "question": payload.query,
             }):
                 yield chunk
+            logger.info("Token generation stream finished successfully.")
         except Exception as err:
             logger.exception("Chat stream error")
             yield f"\n[Error]: Unable to complete response. {err}"
